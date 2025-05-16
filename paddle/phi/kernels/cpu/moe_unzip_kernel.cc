@@ -13,7 +13,7 @@
 // limitations under the License.
 #include "paddle/phi/kernels/moe_unzip_kernel.h"
 
-#include "paddle/phi/backends/all_context.h"
+#include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 
 namespace phi {
@@ -45,14 +45,3 @@ PD_REGISTER_KERNEL(moe_unzip,
                    float,
                    phi::dtype::bfloat16,
                    phi::dtype::float8_e4m3fn) {}
-
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-PD_REGISTER_KERNEL(moe_unzip,
-                   GPU,
-                   ALL_LAYOUT,
-                   phi::MoeUnzipKernel,
-                   int,
-                   float,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float8_e4m3fn) {}
-#endif

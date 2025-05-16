@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/moe_unzip_kernel.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
-#include "paddle/phi/kernels/moe_unzip_kernel.h"
-#include "paddle/phi/kernels/funcs/moe_utils.h"
+#include "paddle/phi/kernels/gpu/moe_unzip_utils.h"
 
 namespace phi {
     
@@ -120,11 +120,11 @@ __global__ void tokens_unzip_stable_kernel(
             shared_expert_probmap[internal_row][expert];
       }
       if constexpr (has_scale) {
-        phi::funcs::vectorized_memcpy(&XScale[row * scale_length],
+        phi::vectorized_memcpy(&XScale[row * scale_length],
                           &XScale_unzipped[unzipped_row_idx * scale_length],
                           scale_length);
       }
-      phi::funcs::vectorized_memcpy(&X[row * token_length],
+      phi::vectorized_memcpy(&X[row * token_length],
                         &X_unzipped[unzipped_row_idx * token_length],
                         token_length);
     }
