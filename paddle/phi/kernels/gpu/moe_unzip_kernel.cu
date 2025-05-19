@@ -16,7 +16,8 @@
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/gpu/moe_unzip_utils.h"
-
+#include "paddle/phi/kernels/full_kernel.h"
+#include <typeinfo>
 namespace phi {
     
 #define CUMSUM_BLOCK_SIZE 48   // cumsum开销和并行度之间的tradeoff的结果，勿动
@@ -149,21 +150,16 @@ void MoeUnzipKernel(const Context& dev_ctx,
   auto XScale_dims = XScale.dims();
   int seq_len = X_dims[0];
   int token_length = X_dims[1];
-  dev_ctx.template Alloc<T>(X_unzipped);
+  printf("show typename: T: %s\n", typeid(T).name());
   dev_ctx.template Alloc<float>(XScale_unzipped);
   dev_ctx.template Alloc<int>(global_expertwise_block_cumsum);
   auto stream = dev_ctx.stream();
-  //为global_expertwise_block_cumsum赋值：
-  auto global_expertwise_block_cumsum_ptr =
-      reinterpret_cast<void *>(global_expertwise_block_cumsum->data<int>());
+  //Full global_expertwise_block_cumsum with invalid tag
+  phi::Full<int, Context>(
+            dev_ctx, phi::IntArray(common::vectorize(global_expertwise_block_cumsum->dims())), CUMSUM_INVALID_TAG, global_expertwise_block_cumsum);
   const int cumsum_blocknum = (seq_len + CUMSUM_BLOCK_SIZE - 1) / CUMSUM_BLOCK_SIZE;
-  cudaMemsetAsync(global_expertwise_block_cumsum_ptr,
-                CUMSUM_INVALID_TAG,
-                sizeof(int) * (cumsum_blocknum + 1) * num_experts,
-                stream); // cuda流的设置
-
   int scale_length = XScale_dims.size() > 1 ? XScale_dims[1] : 0;
-  auto max_tokens_per_expert_v = max_tokens_per_expert.to<int>();
+  auto max_tokens_per_expert_v = (max_tokens_per_expert.to<int>()+127)/128*128;
 
   dim3 grid, block;
   grid.x = cumsum_blocknum;
@@ -175,18 +171,18 @@ void MoeUnzipKernel(const Context& dev_ctx,
 // 分发处理不同的类型组合
 #define DISPATCH_CASE(TOKEN_T, PROB_T, INT_T, HAS_SCALE)                       \
   auto kernel = tokens_unzip_stable_kernel<TOKEN_T, INT_T, PROB_T, HAS_SCALE>; \
-  kernel<<<grid, block, 0, stream>>>(                                       \
+  kernel<<<grid, block, 0, stream>>>(                                          \
       GET_DATA(X, TOKEN_T),                                                    \
       GET_DATA(expert_routemap_topk, INT_T),                                   \
       GET_DATA(expert_prob_topk, PROB_T),                                      \
       XScale.data<float>(),                                                    \
-      GET_PTR_DATA(X_unzipped, TOKEN_T),                                           \
-      GET_PTR_DATA(zipped_expertwise_rowmap, INT_T),                               \
-      GET_PTR_DATA(token_prob_unzipped, PROB_T),                                   \
-      XScale_unzipped->data<float>(),                                           \
-      global_expertwise_block_cumsum->data<int>(),                              \
-      seq_len,                                                 \
-      max_tokens_per_expert_v,                                                   \
+      GET_PTR_DATA(X_unzipped, TOKEN_T),                                       \
+      GET_PTR_DATA(zipped_expertwise_rowmap, INT_T),                           \
+      GET_PTR_DATA(token_prob_unzipped, PROB_T),                               \
+      XScale_unzipped->data<float>(),                                          \
+      global_expertwise_block_cumsum->data<int>(),                             \
+      seq_len,                                                                 \
+      max_tokens_per_expert_v,                                                 \
       token_length,                                                            \
       scale_length,                                                            \
       num_experts,                                                             \
@@ -196,20 +192,22 @@ void MoeUnzipKernel(const Context& dev_ctx,
 #define HANDLE_EXPERT_CASE(TOKEN_T, PROB_T, INT_T, HAS_SCALE) \
   DISPATCH_CASE(TOKEN_T, PROB_T, INT_T, HAS_SCALE)
 
-#define HANDLE_TOKEN_TYPE(PROB_T, INT_T)                       \
-  if (DTYPE_CASE(X.dtype(), BFLOAT16)) {                       \
-    HANDLE_EXPERT_CASE(T, PROB_T, INT_T, false)                   \
-  } else if (DTYPE_CASE(X.dtype(), FLOAT8_E4M3FN)) {           \
-    HANDLE_EXPERT_CASE(T, PROB_T, INT_T, true)                    \                   
+#define HANDLE_TOKEN_TYPE(PROB_T, INT_T)                                  \
+  if (DTYPE_CASE(X.dtype(), BFLOAT16)) {                                  \
+    dev_ctx.template Alloc<phi::dtype::bfloat16>(X_unzipped);             \
+    HANDLE_EXPERT_CASE(phi::dtype::bfloat16, PROB_T, INT_T, false)        \
+  } else if (DTYPE_CASE(X.dtype(), FLOAT8_E4M3FN)) {                      \
+  dev_ctx.template Alloc<phi::dtype::float8_e4m3fn>(X_unzipped);          \
+    HANDLE_EXPERT_CASE(phi::dtype::float8_e4m3fn, PROB_T, INT_T, true)    \                   
   }
 
-#define HANDLE_PROB_TYPE(INT_T)                                \
-  if (DTYPE_CASE(expert_prob_topk.dtype(), BFLOAT16)) {        \
-    dev_ctx.template Alloc<phi::bfloat16>(token_prob_unzipped);\
-    HANDLE_TOKEN_TYPE(phi::bfloat16, INT_T)                    \
-  } else if (DTYPE_CASE(expert_prob_topk.dtype(), FLOAT32)) {  \
-    dev_ctx.template Alloc<float>(token_prob_unzipped);        \
-    HANDLE_TOKEN_TYPE(float, INT_T)                            \
+#define HANDLE_PROB_TYPE(INT_T)                                           \
+  if (DTYPE_CASE(expert_prob_topk.dtype(), BFLOAT16)) {                   \
+    dev_ctx.template Alloc<phi::dtype::bfloat16>(token_prob_unzipped);    \
+    HANDLE_TOKEN_TYPE(phi::dtype::bfloat16, INT_T)                        \
+  } else if (DTYPE_CASE(expert_prob_topk.dtype(), FLOAT32)) {             \
+    dev_ctx.template Alloc<float>(token_prob_unzipped);                   \
+    HANDLE_TOKEN_TYPE(float, INT_T)                                       \
   }
 
   // 可扩展：根据整型类型控制派发，未来可支持int8，但int64不行，因为下标开销太重了，建议在外面直接cast到int32

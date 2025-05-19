@@ -6317,17 +6317,17 @@ void MoeUnzipInferMeta(const MetaTensor& X,
                         x_dim[1]));
 
   int CUMSUM_BLOCK_SIZE = 48;
-
-  X_unzipped->set_dims({-1, x_dim[1]});  // can not infer
+  int unzip_rows = num_experts*max_tokens_per_expert.to<int>();
+  X_unzipped->set_dims({unzip_rows, x_dim[1]});  // can not infer
   X_unzipped->set_dtype(X.dtype());
 
   zipped_expertwise_rowmap->set_dims(phi::make_ddim({x_dim[0], num_experts}));
   zipped_expertwise_rowmap->set_dtype(phi::DataType::INT32);
 
-  token_prob_unzipped->set_dims({-1, 1});  // can not infer
+  token_prob_unzipped->set_dims({unzip_rows, 1});  // can not infer
   token_prob_unzipped->set_dtype(expert_prob_topk.dtype());
 
-  XScale_unzipped->set_dims({-1, xscale_dim[1]});  // can not infer
+  XScale_unzipped->set_dims({unzip_rows, xscale_dim[1]});  // can not infer
   XScale_unzipped->set_dtype(XScale.dtype());
 
   global_expertwise_block_cumsum->set_dims(phi::make_ddim(
